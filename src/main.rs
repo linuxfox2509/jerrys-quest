@@ -28,11 +28,10 @@ struct Coin {
 // Game state enum
 enum GameState {
     Playing,
-    Win,
     GameOver,
 }
 
-#[macroquad::main("Jerry's Quest")]
+#[macroquad::main("Jerry Jump Endless")]
 async fn main() {
     // Load textures
     let player_tex = load_texture("assets/player.png").await.unwrap();
@@ -52,11 +51,17 @@ async fn main() {
         on_ground: false,
     };
 
-    let gravity = 0.45;
-    let jump_force = -16.0;
+    // --- Physics settings ---
+    let gravity = 0.5;        // natural fall
+    let jump_force = -12.0;   // natural arc
+    let move_speed = 4.0;     // horizontal speed
 
-    // Platforms
-    let platforms = vec![
+    // --- Coyote time ---
+    let coyote_time_max = 0.15;
+    let mut coyote_timer = 0.0;
+
+    // Start with initial platforms
+    let mut platforms = vec![
         Platform { pos: vec2(0.0, 400.0), size: vec2(256.0, 32.0), kind: PlatformKind::Big },
         Platform { pos: vec2(300.0, 300.0), size: vec2(128.0, 32.0), kind: PlatformKind::Small },
         Platform { pos: vec2(500.0, 200.0), size: vec2(128.0, 32.0), kind: PlatformKind::Small },
@@ -68,26 +73,36 @@ async fn main() {
         Coin { pos: vec2(540.0, 184.0), collected: false },
     ];
 
-    let mut score = 0;
+    let mut score: u32 = 0;
+    let mut highscore: u32 = 0;
     let mut state = GameState::Playing;
 
     loop {
         clear_background(LIGHTGRAY);
+        let dt = get_frame_time();
 
         match state {
             GameState::Playing => {
                 // --- INPUT ---
                 if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
-                    player.vel.x = -3.5;
+                    player.vel.x = -move_speed;
                 } else if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
-                    player.vel.x = 3.5;
+                    player.vel.x = move_speed;
                 } else {
                     player.vel.x = 0.0;
                 }
 
-                if player.on_ground && is_key_pressed(KeyCode::Space) {
+                // --- COYOTE TIME ---
+                if player.on_ground {
+                    coyote_timer = coyote_time_max;
+                } else {
+                    coyote_timer -= dt;
+                }
+
+                if is_key_pressed(KeyCode::Space) && coyote_timer > 0.0 {
                     player.vel.y = jump_force;
                     player.on_ground = false;
+                    coyote_timer = 0.0;
                 }
 
                 // --- PHYSICS ---
@@ -101,19 +116,37 @@ async fn main() {
                     let plat_rect = Rect::new(plat.pos.x, plat.pos.y, plat.size.x, plat.size.y);
 
                     if player_rect.overlaps(&plat_rect) {
-                        // Landing on top
                         if player.vel.y > 0.0 && player.pos.y + 32.0 - player.vel.y <= plat.pos.y {
                             player.pos.y = plat.pos.y - 32.0;
                             player.vel.y = 0.0;
                             player.on_ground = true;
-                        }
-                        // Hitting bottom
-                        else if player.vel.y < 0.0 && player.pos.y >= plat.pos.y + plat.size.y {
+                        } else if player.vel.y < 0.0 && player.pos.y >= plat.pos.y + plat.size.y {
                             player.pos.y = plat.pos.y + plat.size.y;
                             player.vel.y = 0.0;
                         }
                     }
                 }
+
+                // --- CAMERA ---
+                let camera_x = player.pos.x - screen_width()/3.0;
+
+                // --- SPAWN PLATFORMS ---
+                while let Some(last) = platforms.last() {
+                    if last.pos.x + last.size.x < camera_x + screen_width() {
+                        let new_plat = spawn_platform(last, jump_force, gravity, move_speed);
+                        platforms.push(new_plat);
+
+                        // Spawn coin
+                        let last = platforms.last().unwrap();
+                        let coin_x = last.pos.x + last.size.x / 2.0 - 8.0;
+                        let coin_y = last.pos.y - 16.0;
+                        coins.push(Coin { pos: vec2(coin_x, coin_y), collected: false });
+                    } else { break; }
+                }
+
+                // --- REMOVE OFFSCREEN ---
+                platforms.retain(|p| p.pos.x + p.size.x > camera_x - 100.0);
+                coins.retain(|c| c.pos.x + 16.0 > camera_x - 100.0 && !c.collected);
 
                 // --- COINS ---
                 for coin in &mut coins {
@@ -127,17 +160,13 @@ async fn main() {
                     }
                 }
 
-                // --- CHECK WIN / GAME OVER ---
-                if coins.iter().all(|c| c.collected) {
-                    state = GameState::Win;
-                }
-
+                // --- GAME OVER ---
                 if player.pos.y > screen_height() {
                     state = GameState::GameOver;
+                    if score > highscore { highscore = score; }
                 }
 
                 // --- DRAW ---
-                // Platforms
                 for plat in &platforms {
                     let tex = match plat.kind {
                         PlatformKind::Small => &small_platform_tex,
@@ -145,63 +174,56 @@ async fn main() {
                     };
                     draw_texture_ex(
                         tex,
-                        plat.pos.x,
+                        plat.pos.x - camera_x,
                         plat.pos.y,
                         WHITE,
                         DrawTextureParams { dest_size: Some(plat.size), ..Default::default() },
                     );
                 }
 
-                // Coins
                 for coin in &coins {
                     if !coin.collected {
                         draw_texture_ex(
                             &coin_tex,
-                            coin.pos.x,
+                            coin.pos.x - camera_x,
                             coin.pos.y,
                             WHITE,
-                            DrawTextureParams { dest_size: Some(vec2(16.0, 16.0)), ..Default::default() },
+                            DrawTextureParams { dest_size: Some(vec2(16.0,16.0)), ..Default::default() },
                         );
                     }
                 }
 
-                // Player
                 draw_texture_ex(
                     &player_tex,
-                    player.pos.x,
+                    player.pos.x - camera_x,
                     player.pos.y,
                     WHITE,
-                    DrawTextureParams { dest_size: Some(vec2(32.0, 32.0)), ..Default::default() },
+                    DrawTextureParams { dest_size: Some(vec2(32.0,32.0)), ..Default::default() },
                 );
 
-                // HUD
                 draw_text(&format!("Score: {}", score), 20.0, 30.0, 30.0, BLACK);
+                draw_text(&format!("Highscore: {}", highscore), 20.0, 60.0, 30.0, BLACK);
             }
 
             GameState::GameOver => {
                 clear_background(BLACK);
                 draw_text("Game Over!", screen_width()/2.0 - 100.0, screen_height()/2.0, 50.0, RED);
-                draw_text("Press R to restart", screen_width()/2.0 - 130.0, screen_height()/2.0 + 60.0, 30.0, WHITE);
+                draw_text(&format!("Score: {}", score), screen_width()/2.0 - 50.0, screen_height()/2.0 + 50.0, 30.0, WHITE);
+                draw_text(&format!("Highscore: {}", highscore), screen_width()/2.0 - 70.0, screen_height()/2.0 + 90.0, 30.0, WHITE);
+                draw_text("Press R to restart", screen_width()/2.0 - 130.0, screen_height()/2.0 + 140.0, 30.0, WHITE);
 
                 if is_key_pressed(KeyCode::R) {
                     player.pos = vec2(50.0, 300.0);
                     player.vel = vec2(0.0, 0.0);
-                    for coin in &mut coins { coin.collected = false; }
-                    score = 0;
-                    state = GameState::Playing;
-                }
-            }
-
-            GameState::Win => {
-                clear_background(LIME);
-                draw_text("You Win!", screen_width()/2.0 - 90.0, screen_height()/2.0, 50.0, GOLD);
-                draw_text(&format!("Score: {}", score), screen_width()/2.0 - 50.0, screen_height()/2.0 + 60.0, 30.0, BLACK);
-                draw_text("Press R to restart", screen_width()/2.0 - 130.0, screen_height()/2.0 + 100.0, 30.0, BLACK);
-
-                if is_key_pressed(KeyCode::R) {
-                    player.pos = vec2(50.0, 300.0);
-                    player.vel = vec2(0.0, 0.0);
-                    for coin in &mut coins { coin.collected = false; }
+                    player.on_ground = false;
+                    coyote_timer = 0.0;
+                    platforms.clear();
+                    platforms.push(Platform { pos: vec2(0.0, 400.0), size: vec2(256.0, 32.0), kind: PlatformKind::Big });
+                    platforms.push(Platform { pos: vec2(300.0, 300.0), size: vec2(128.0, 32.0), kind: PlatformKind::Small });
+                    platforms.push(Platform { pos: vec2(500.0, 200.0), size: vec2(128.0, 32.0), kind: PlatformKind::Small });
+                    coins.clear();
+                    coins.push(Coin { pos: vec2(340.0, 284.0), collected: false });
+                    coins.push(Coin { pos: vec2(540.0, 184.0), collected: false });
                     score = 0;
                     state = GameState::Playing;
                 }
@@ -210,4 +232,25 @@ async fn main() {
 
         next_frame().await;
     }
+}
+
+/// Spawn platform with physics-based spacing so jumps are always reachable
+fn spawn_platform(last: &Platform, jump_force: f32, gravity: f32, move_speed: f32) -> Platform {
+    // Max horizontal distance reachable by player based on jump physics
+    let t_up = -jump_force / gravity;
+    let t_total = t_up * 2.0; // total time in air
+    let max_jump_distance = move_speed * t_total * 0.9; // slightly reduced to be safe
+
+    let min_gap = 120.0;
+    let max_gap = max_jump_distance.min(220.0); // never too far
+    let gap = rand::gen_range(min_gap, max_gap);
+
+    let kind = if rand::gen_range(0,2) == 0 { PlatformKind::Small } else { PlatformKind::Big };
+    let width = match kind { PlatformKind::Small => 128.0, PlatformKind::Big => 256.0 };
+
+    let min_y = (last.pos.y - 80.0).max(150.0);
+    let max_y = (last.pos.y + 80.0).min(400.0);
+    let y = rand::gen_range(min_y, max_y);
+
+    Platform { pos: vec2(last.pos.x + last.size.x + gap, y), size: vec2(width, 32.0), kind }
 }
